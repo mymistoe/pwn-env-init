@@ -5,6 +5,7 @@ set -eux
 # 错误处理函数
 error_exit() {
     echo "错误: $1" >&2
+    cleanup
     exit 1
 }
 
@@ -21,6 +22,51 @@ check_dependency() {
         error_exit "缺少必要依赖: $1"
     fi
 }
+
+# 临时文件列表
+TEMP_FILES=()
+TEMP_DIRS=()
+
+# 清理函数
+cleanup() {
+    echo "正在清理临时文件..."
+    
+    # 清理临时文件
+    for file in "${TEMP_FILES[@]}"; do
+        if [ -f "$file" ]; then
+            rm -f "$file"
+            echo "已删除临时文件: $file"
+        fi
+    done
+    
+    # 清理临时目录
+    for dir in "${TEMP_DIRS[@]}"; do
+        if [ -d "$dir" ]; then
+            rm -rf "$dir"
+            echo "已删除临时目录: $dir"
+        fi
+    done
+    
+    # 如果安装失败，尝试回滚已安装的包
+    if [ "$INSTALL_FAILED" = true ]; then
+        echo "正在回滚已安装的包..."
+        # 回滚Python包
+        if [ "$python_version" = "2" ]; then
+            pip uninstall -y pwntools more-itertools
+        else
+            pip3 uninstall -y pwntools
+        fi
+        # 回滚系统包
+        sudo apt-get remove -y libc6-i386 ruby
+        sudo gem uninstall one_gadget
+    fi
+}
+
+# 设置清理陷阱
+trap cleanup EXIT
+
+# 安装状态标志
+INSTALL_FAILED=false
 
 echo "Author : giantbranch "
 echo ""
@@ -41,7 +87,11 @@ if [[ $python_version != "2" && $python_version != "3" ]]; then
     error_exit "无效的选择，请输入2或3"
 fi
 
-cd ~/
+# 创建临时目录
+TEMP_DIR=$(mktemp -d)
+TEMP_DIRS+=("$TEMP_DIR")
+cd "$TEMP_DIR"
+
 # change sourse to ustc
 echo "I suggest you modify the /etc/apt/sources.list file to speed up the download."
 # echo "Press Enter to continue~"
@@ -133,3 +183,6 @@ fi
 echo "========================================="
 echo "=============Good, Enjoy it.============="
 echo "========================================="
+
+# 安装成功，清除安装失败标志
+INSTALL_FAILED=false
