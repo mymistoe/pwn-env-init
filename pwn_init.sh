@@ -2,6 +2,14 @@
 
 set -eux
 
+# 全局变量定义
+python_version=""
+INSTALL_FAILED=false
+TEMP_FILES=()
+TEMP_DIRS=()
+TOTAL_STEPS=16
+CURRENT_STEP=0
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -12,6 +20,66 @@ NC='\033[0m' # No Color
 # 时间跟踪
 START_TIME=$(date +%s)
 STEP_TIMES=()
+
+# 命令执行检查函数
+check_command() {
+    local status=$?
+    if [ $status -ne 0 ]; then
+        error_exit "命令执行失败: $1 (状态码: $status)"
+    fi
+}
+
+# 错误处理函数
+error_exit() {
+    echo -e "${RED}错误: $1${NC}" >&2
+    cleanup
+    exit 1
+}
+
+# 依赖包检查函数
+check_dependency() {
+    if ! command -v $1 &> /dev/null; then
+        error_exit "缺少必要依赖: $1"
+    fi
+}
+
+# 清理函数
+cleanup() {
+    echo -e "${YELLOW}正在清理临时文件...${NC}"
+    
+    # 清理临时文件
+    for file in "${TEMP_FILES[@]}"; do
+        if [ -f "$file" ]; then
+            rm -f "$file"
+            echo -e "${GREEN}已删除临时文件: $file${NC}"
+        fi
+    done
+    
+    # 清理临时目录
+    for dir in "${TEMP_DIRS[@]}"; do
+        if [ -d "$dir" ]; then
+            rm -rf "$dir"
+            echo -e "${GREEN}已删除临时目录: $dir${NC}"
+        fi
+    done
+    
+    # 如果安装失败，尝试回滚已安装的包
+    if [ "$INSTALL_FAILED" = true ]; then
+        echo -e "${YELLOW}正在回滚已安装的包...${NC}"
+        # 回滚Python包
+        if [ "$python_version" = "2" ]; then
+            pip uninstall -y pwntools more-itertools || true
+        else
+            pip3 uninstall -y pwntools || true
+        fi
+        # 回滚系统包
+        sudo apt-get remove -y libc6-i386 ruby || true
+        sudo gem uninstall one_gadget || true
+    fi
+}
+
+# 设置清理陷阱
+trap cleanup EXIT
 
 # 检测shell环境函数
 check_shell_env() {
@@ -81,6 +149,9 @@ check_shell_env() {
             done
         fi
     fi
+    
+    # 更新总步骤数
+    update_total_steps
 }
 
 # 检测Python环境函数
@@ -142,6 +213,9 @@ check_python_env() {
             error_exit "安装已取消"
         fi
     fi
+    
+    # 更新总步骤数
+    update_total_steps
 }
 
 # 权限检查函数
@@ -168,9 +242,9 @@ check_permissions() {
     
     # 检查Python包安装目录权限
     if [ "$python_version" = "2" ]; then
-        local python_dir=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+        local python_dir=$(python2 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || true)
     else
-        local python_dir=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+        local python_dir=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || true)
     fi
     
     if [ -n "$python_dir" ] && [ ! -w "$python_dir" ]; then
@@ -178,7 +252,7 @@ check_permissions() {
     fi
     
     # 检查Ruby gem目录权限
-    local gem_dir=$(gem environment gemdir 2>/dev/null)
+    local gem_dir=$(gem environment gemdir 2>/dev/null || true)
     if [ -n "$gem_dir" ] && [ ! -w "$gem_dir" ]; then
         echo -e "${YELLOW}警告: Ruby gem目录 $gem_dir 没有写入权限，可能需要使用sudo安装gem包${NC}"
     fi
@@ -256,14 +330,22 @@ show_progress() {
     # 计算预计剩余时间
     local current_time=$(date +%s)
     local elapsed=$((current_time - START_TIME))
-    local avg_time=$((elapsed / current))
-    local remaining=$((avg_time * (total - current)))
-    local remaining_min=$((remaining / 60))
-    local remaining_sec=$((remaining % 60))
+    local remaining=""
+    
+    # 避免除零错误
+    if [ $current -gt 0 ]; then
+        local avg_time=$((elapsed / current))
+        local remaining_time=$((avg_time * (total - current)))
+        local remaining_min=$((remaining_time / 60))
+        local remaining_sec=$((remaining_time % 60))
+        remaining="(预计剩余: ${remaining_min}:${remaining_sec})"
+    else
+        remaining="(正在初始化...)"
+    fi
     
     # 使用颜色输出
-    printf "\r${BLUE}[%-${bar_length}s]${NC} ${GREEN}%3d%%${NC} ${YELLOW}%s${NC} ${RED}(预计剩余: %02d:%02d)${NC}" \
-        "$bar$empty" "$percent" "$message" "$remaining_min" "$remaining_sec"
+    printf "\r${BLUE}[%-${bar_length}s]${NC} ${GREEN}%3d%%${NC} ${YELLOW}%s${NC} ${RED}%s${NC}" \
+        "$bar$empty" "$percent" "$message" "$remaining"
 }
 
 # 更新进度函数
@@ -276,79 +358,38 @@ update_progress() {
     STEP_TIMES+=($((step_end - step_start)))
 }
 
-# 错误处理函数
-error_exit() {
-    echo -e "${RED}错误: $1${NC}" >&2
-    cleanup
-    exit 1
-}
-
-# 命令执行检查函数
-check_command() {
-    if [ $? -ne 0 ]; then
-        error_exit "命令执行失败: $1"
-    fi
-}
-
-# 依赖包检查函数
-check_dependency() {
-    if ! command -v $1 &> /dev/null; then
-        error_exit "缺少必要依赖: $1"
-    fi
-}
-
-# 临时文件列表
-TEMP_FILES=()
-TEMP_DIRS=()
-
-# 清理函数
-cleanup() {
-    echo -e "${YELLOW}正在清理临时文件...${NC}"
+# 动态更新总步骤数
+update_total_steps() {
+    local additional_steps=0
     
-    # 清理临时文件
-    for file in "${TEMP_FILES[@]}"; do
-        if [ -f "$file" ]; then
-            rm -f "$file"
-            echo -e "${GREEN}已删除临时文件: $file${NC}"
-        fi
-    done
-    
-    # 清理临时目录
-    for dir in "${TEMP_DIRS[@]}"; do
-        if [ -d "$dir" ]; then
-            rm -rf "$dir"
-            echo -e "${GREEN}已删除临时目录: $dir${NC}"
-        fi
-    done
-    
-    # 如果安装失败，尝试回滚已安装的包
-    if [ "$INSTALL_FAILED" = true ]; then
-        echo -e "${YELLOW}正在回滚已安装的包...${NC}"
-        # 回滚Python包
-        if [ "$python_version" = "2" ]; then
-            pip uninstall -y pwntools more-itertools
-        else
-            pip3 uninstall -y pwntools
-        fi
-        # 回滚系统包
-        sudo apt-get remove -y libc6-i386 ruby
-        sudo gem uninstall one_gadget
+    # 检查是否需要安装其他shell
+    if [ ${#installed_shells[@]} -lt ${#shells[@]} ]; then
+        for shell in "${shells[@]}"; do
+            if ! command -v $shell &> /dev/null; then
+                ((additional_steps++))
+            fi
+        done
     fi
+    
+    # 检查是否需要安装Python环境
+    if [ "$python_version" = "2" ] && ! command -v python2 &> /dev/null; then
+        ((additional_steps++))
+    elif [ "$python_version" = "3" ] && ! command -v python3 &> /dev/null; then
+        ((additional_steps++))
+    fi
+    
+    # 更新总步骤数
+    TOTAL_STEPS=$((16 + additional_steps))
 }
 
-# 设置清理陷阱
-trap cleanup EXIT
-
-# 安装状态标志
-INSTALL_FAILED=false
-
-# 进度跟踪
-TOTAL_STEPS=16  # 总步骤数增加
-CURRENT_STEP=0  # 当前步骤
-
+# 主程序开始
 echo -e "${BLUE}Author : giantbranch ${NC}"
 echo ""
 echo -e "${BLUE}Github : https://github.com/giantbranch/pwn-env-init${NC}"
+echo ""
+
+# 初始化进度显示
+show_progress 0 1 "正在初始化..."
 echo ""
 
 # 检查shell环境
@@ -436,7 +477,7 @@ check_command "克隆pwndbg失败"
 cd pwndbg
 ./setup.sh
 check_command "安装pwndbg失败"
-cd ..
+cd "$TEMP_DIR"  # 确保返回临时目录
 update_progress "安装pwndbg完成"
 
 # install peda
@@ -492,6 +533,7 @@ if [[ $input = "n" ]] || [[ $input = "N" ]]; then
 else
     cd ~/libc-database && ./get
     check_command "下载libc-database失败"
+    cd "$TEMP_DIR"  # 确保返回临时目录
     update_progress "下载libc-database完成"
 fi
 
