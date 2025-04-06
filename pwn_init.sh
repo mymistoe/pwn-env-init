@@ -7,8 +7,10 @@ python_version=""
 INSTALL_FAILED=false
 TEMP_FILES=()
 TEMP_DIRS=()
-TOTAL_STEPS=16
+TOTAL_STEPS=15
 CURRENT_STEP=0
+SHELLS=("bash" "zsh" "fish")
+INSTALLED_SHELLS=()
 
 # 颜色定义
 RED='\033[0;31m'
@@ -23,9 +25,9 @@ STEP_TIMES=()
 
 # 命令执行检查函数
 check_command() {
-    local status=$?
-    if [ $status -ne 0 ]; then
-        error_exit "命令执行失败: $1 (状态码: $status)"
+    local cmd_status=$?
+    if [ $cmd_status -ne 0 ]; then
+        error_exit "命令执行失败: $1 (状态码: $cmd_status)"
     fi
 }
 
@@ -81,6 +83,14 @@ cleanup() {
 # 设置清理陷阱
 trap cleanup EXIT
 
+# 安全目录切换函数
+safe_cd() {
+    local target_dir="$1"
+    if ! cd "$target_dir"; then
+        error_exit "无法切换到目录: $target_dir"
+    fi
+}
+
 # 检测shell环境函数
 check_shell_env() {
     echo -e "${YELLOW}正在检测shell环境...${NC}"
@@ -90,13 +100,12 @@ check_shell_env() {
     echo -e "${GREEN}当前使用的shell: $current_shell${NC}"
     
     # 检查是否安装了其他常用shell
-    local shells=("bash" "zsh" "fish")
-    local installed_shells=()
+    INSTALLED_SHELLS=()
     
-    for shell in "${shells[@]}"; do
+    for shell in "${SHELLS[@]}"; do
         if command -v $shell &> /dev/null; then
             local version=$($shell --version 2>&1 | head -n 1)
-            installed_shells+=("$shell")
+            INSTALLED_SHELLS+=("$shell")
             echo -e "${GREEN}已安装: $shell${NC} - $version"
         else
             echo -e "${YELLOW}未安装: $shell${NC}"
@@ -132,11 +141,11 @@ check_shell_env() {
     esac
     
     # 询问用户是否要安装其他shell
-    if [ ${#installed_shells[@]} -lt ${#shells[@]} ]; then
+    if [ ${#INSTALLED_SHELLS[@]} -lt ${#SHELLS[@]} ]; then
         echo -e "${YELLOW}是否要安装其他shell环境？(y/N)${NC}"
         read install_other_shells
         if [[ $install_other_shells == "y" || $install_other_shells == "Y" ]]; then
-            for shell in "${shells[@]}"; do
+            for shell in "${SHELLS[@]}"; do
                 if ! command -v $shell &> /dev/null; then
                     echo -e "${YELLOW}是否安装 $shell？(y/N)${NC}"
                     read install_shell
@@ -270,28 +279,6 @@ set_directory_permissions() {
     done
 }
 
-# 系统架构检查函数
-check_architecture() {
-    local arch=$(uname -m)
-    echo -e "${YELLOW}检测系统架构: $arch${NC}"
-    
-    case $arch in
-        "x86_64")
-            echo -e "${GREEN}系统架构支持: 64位系统${NC}"
-            ;;
-        "i386"|"i486"|"i586"|"i686")
-            echo -e "${GREEN}系统架构支持: 32位系统${NC}"
-            ;;
-        "aarch64"|"arm64")
-            echo -e "${YELLOW}警告: 检测到ARM架构，某些功能可能不受支持${NC}"
-            ;;
-        *)
-            echo -e "${RED}错误: 不支持的架构: $arch${NC}"
-            exit 1
-            ;;
-    esac
-}
-
 # 必要工具检查函数
 check_required_tools() {
     local tools=("curl" "wget" "make" "gcc" "g++" "python" "python3" "pip" "pip3" "ruby" "gem")
@@ -363,8 +350,8 @@ update_total_steps() {
     local additional_steps=0
     
     # 检查是否需要安装其他shell
-    if [ ${#installed_shells[@]} -lt ${#shells[@]} ]; then
-        for shell in "${shells[@]}"; do
+    if [ ${#INSTALLED_SHELLS[@]} -lt ${#SHELLS[@]} ]; then
+        for shell in "${SHELLS[@]}"; do
             if ! command -v $shell &> /dev/null; then
                 ((additional_steps++))
             fi
@@ -379,7 +366,7 @@ update_total_steps() {
     fi
     
     # 更新总步骤数
-    TOTAL_STEPS=$((16 + additional_steps))
+    TOTAL_STEPS=$((15 + additional_steps))
 }
 
 # 主程序开始
@@ -403,10 +390,6 @@ update_progress "Python环境检测完成"
 # 检查权限
 check_permissions
 update_progress "权限检查完成"
-
-# 检查系统架构
-check_architecture
-update_progress "系统架构检查完成"
 
 # 检查必要工具
 check_required_tools
@@ -474,10 +457,10 @@ update_progress "安装系统依赖完成"
 echo -e "${YELLOW}正在安装pwndbg...${NC}"
 git clone https://github.com/pwndbg/pwndbg
 check_command "克隆pwndbg失败"
-cd pwndbg
+safe_cd pwndbg
 ./setup.sh
 check_command "安装pwndbg失败"
-cd "$TEMP_DIR"  # 确保返回临时目录
+safe_cd "$TEMP_DIR"  # 确保返回临时目录
 update_progress "安装pwndbg完成"
 
 # install peda
@@ -531,9 +514,10 @@ read input
 if [[ $input = "n" ]] || [[ $input = "N" ]]; then
     echo -e "${YELLOW}you can cd ~/libc-database and run ./get to download the libc at anytime you want${NC}"
 else
-    cd ~/libc-database && ./get
+    safe_cd ~/libc-database
+    ./get
     check_command "下载libc-database失败"
-    cd "$TEMP_DIR"  # 确保返回临时目录
+    safe_cd "$TEMP_DIR"  # 确保返回临时目录
     update_progress "下载libc-database完成"
 fi
 
