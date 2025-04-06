@@ -2,9 +2,213 @@
 
 set -eux
 
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# 时间跟踪
+START_TIME=$(date +%s)
+STEP_TIMES=()
+
+# 检测Python环境函数
+check_python_env() {
+    echo -e "${YELLOW}正在检测本地Python环境...${NC}"
+    
+    # 检测Python2
+    if command -v python2 &> /dev/null; then
+        local py2_version=$(python2 --version 2>&1)
+        echo -e "${GREEN}检测到Python2环境: $py2_version${NC}"
+    else
+        echo -e "${YELLOW}未检测到Python2环境${NC}"
+    fi
+    
+    # 检测Python3
+    if command -v python3 &> /dev/null; then
+        local py3_version=$(python3 --version 2>&1)
+        echo -e "${GREEN}检测到Python3环境: $py3_version${NC}"
+    else
+        echo -e "${YELLOW}未检测到Python3环境${NC}"
+    fi
+    
+    # 检测pip
+    if command -v pip &> /dev/null; then
+        local pip_version=$(pip --version 2>&1)
+        echo -e "${GREEN}检测到pip: $pip_version${NC}"
+    else
+        echo -e "${YELLOW}未检测到pip${NC}"
+    fi
+    
+    # 检测pip3
+    if command -v pip3 &> /dev/null; then
+        local pip3_version=$(pip3 --version 2>&1)
+        echo -e "${GREEN}检测到pip3: $pip3_version${NC}"
+    else
+        echo -e "${YELLOW}未检测到pip3${NC}"
+    fi
+    
+    echo -e "${YELLOW}请选择要配置的Python版本 (2/3):${NC}"
+    read python_version
+    
+    if [[ $python_version != "2" && $python_version != "3" ]]; then
+        error_exit "无效的选择，请输入2或3"
+    fi
+    
+    # 检查选择的Python版本是否已安装
+    if [ "$python_version" = "2" ] && ! command -v python2 &> /dev/null; then
+        echo -e "${YELLOW}警告: 您选择了Python2，但系统中未检测到Python2环境${NC}"
+        echo -e "${YELLOW}是否继续安装Python2环境？(y/N)${NC}"
+        read confirm
+        if [[ $confirm != "y" && $confirm != "Y" ]]; then
+            error_exit "安装已取消"
+        fi
+    elif [ "$python_version" = "3" ] && ! command -v python3 &> /dev/null; then
+        echo -e "${YELLOW}警告: 您选择了Python3，但系统中未检测到Python3环境${NC}"
+        echo -e "${YELLOW}是否继续安装Python3环境？(y/N)${NC}"
+        read confirm
+        if [[ $confirm != "y" && $confirm != "Y" ]]; then
+            error_exit "安装已取消"
+        fi
+    fi
+}
+
+# 权限检查函数
+check_permissions() {
+    # 检查root权限
+    if [ "$EUID" -ne 0 ]; then 
+        echo -e "${RED}错误: 请使用sudo运行此脚本${NC}"
+        exit 1
+    fi
+    
+    # 检查用户主目录权限
+    if [ ! -w "$HOME" ]; then
+        echo -e "${RED}错误: 用户主目录没有写入权限${NC}"
+        exit 1
+    fi
+    
+    # 检查必要的系统目录权限
+    local system_dirs=("/usr/local/bin" "/usr/bin" "/usr/lib" "/usr/include")
+    for dir in "${system_dirs[@]}"; do
+        if [ ! -w "$dir" ]; then
+            echo -e "${YELLOW}警告: 目录 $dir 没有写入权限，某些功能可能受限${NC}"
+        fi
+    done
+    
+    # 检查Python包安装目录权限
+    if [ "$python_version" = "2" ]; then
+        local python_dir=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+    else
+        local python_dir=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+    fi
+    
+    if [ -n "$python_dir" ] && [ ! -w "$python_dir" ]; then
+        echo -e "${YELLOW}警告: Python包目录 $python_dir 没有写入权限，可能需要使用sudo安装Python包${NC}"
+    fi
+    
+    # 检查Ruby gem目录权限
+    local gem_dir=$(gem environment gemdir 2>/dev/null)
+    if [ -n "$gem_dir" ] && [ ! -w "$gem_dir" ]; then
+        echo -e "${YELLOW}警告: Ruby gem目录 $gem_dir 没有写入权限，可能需要使用sudo安装gem包${NC}"
+    fi
+}
+
+# 设置目录权限函数
+set_directory_permissions() {
+    local dirs=("$HOME/peda" "$HOME/pwndbg" "$HOME/libc-database")
+    
+    for dir in "${dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            chmod -R 755 "$dir"
+            echo -e "${GREEN}已设置目录权限: $dir${NC}"
+        fi
+    done
+}
+
+# 系统架构检查函数
+check_architecture() {
+    local arch=$(uname -m)
+    echo -e "${YELLOW}检测系统架构: $arch${NC}"
+    
+    case $arch in
+        "x86_64")
+            echo -e "${GREEN}系统架构支持: 64位系统${NC}"
+            ;;
+        "i386"|"i486"|"i586"|"i686")
+            echo -e "${GREEN}系统架构支持: 32位系统${NC}"
+            ;;
+        "aarch64"|"arm64")
+            echo -e "${YELLOW}警告: 检测到ARM架构，某些功能可能不受支持${NC}"
+            ;;
+        *)
+            echo -e "${RED}错误: 不支持的架构: $arch${NC}"
+            exit 1
+            ;;
+    esac
+}
+
+# 必要工具检查函数
+check_required_tools() {
+    local tools=("curl" "wget" "make" "gcc" "g++" "python" "python3" "pip" "pip3" "ruby" "gem")
+    local missing_tools=()
+    
+    echo -e "${YELLOW}检查必要工具...${NC}"
+    
+    for tool in "${tools[@]}"; do
+        if ! command -v $tool &> /dev/null; then
+            missing_tools+=("$tool")
+        else
+            local version=$($tool --version 2>&1 | head -n 1)
+            echo -e "${GREEN}已安装: $tool${NC} - $version"
+        fi
+    done
+    
+    if [ ${#missing_tools[@]} -ne 0 ]; then
+        echo -e "${YELLOW}以下工具未安装，将在安装过程中自动安装:${NC}"
+        for tool in "${missing_tools[@]}"; do
+            echo -e "${YELLOW}- $tool${NC}"
+        done
+    fi
+}
+
+# 进度显示函数
+show_progress() {
+    local current=$1
+    local total=$2
+    local message=$3
+    local percent=$((current * 100 / total))
+    local bar_length=50
+    local filled=$((percent * bar_length / 100))
+    local bar=$(printf "%${filled}s" | tr " " "=")
+    local empty=$(printf "%$((bar_length - filled))s" | tr " " " ")
+    
+    # 计算预计剩余时间
+    local current_time=$(date +%s)
+    local elapsed=$((current_time - START_TIME))
+    local avg_time=$((elapsed / current))
+    local remaining=$((avg_time * (total - current)))
+    local remaining_min=$((remaining / 60))
+    local remaining_sec=$((remaining % 60))
+    
+    # 使用颜色输出
+    printf "\r${BLUE}[%-${bar_length}s]${NC} ${GREEN}%3d%%${NC} ${YELLOW}%s${NC} ${RED}(预计剩余: %02d:%02d)${NC}" \
+        "$bar$empty" "$percent" "$message" "$remaining_min" "$remaining_sec"
+}
+
+# 更新进度函数
+update_progress() {
+    local step_start=$(date +%s)
+    ((CURRENT_STEP++))
+    show_progress "$CURRENT_STEP" "$TOTAL_STEPS" "$1"
+    echo ""
+    local step_end=$(date +%s)
+    STEP_TIMES+=($((step_end - step_start)))
+}
+
 # 错误处理函数
 error_exit() {
-    echo "错误: $1" >&2
+    echo -e "${RED}错误: $1${NC}" >&2
     cleanup
     exit 1
 }
@@ -29,13 +233,13 @@ TEMP_DIRS=()
 
 # 清理函数
 cleanup() {
-    echo "正在清理临时文件..."
+    echo -e "${YELLOW}正在清理临时文件...${NC}"
     
     # 清理临时文件
     for file in "${TEMP_FILES[@]}"; do
         if [ -f "$file" ]; then
             rm -f "$file"
-            echo "已删除临时文件: $file"
+            echo -e "${GREEN}已删除临时文件: $file${NC}"
         fi
     done
     
@@ -43,13 +247,13 @@ cleanup() {
     for dir in "${TEMP_DIRS[@]}"; do
         if [ -d "$dir" ]; then
             rm -rf "$dir"
-            echo "已删除临时目录: $dir"
+            echo -e "${GREEN}已删除临时目录: $dir${NC}"
         fi
     done
     
     # 如果安装失败，尝试回滚已安装的包
     if [ "$INSTALL_FAILED" = true ]; then
-        echo "正在回滚已安装的包..."
+        echo -e "${YELLOW}正在回滚已安装的包...${NC}"
         # 回滚Python包
         if [ "$python_version" = "2" ]; then
             pip uninstall -y pwntools more-itertools
@@ -68,45 +272,74 @@ trap cleanup EXIT
 # 安装状态标志
 INSTALL_FAILED=false
 
-echo "Author : giantbranch "
+# 进度跟踪
+TOTAL_STEPS=15  # 总步骤数增加
+CURRENT_STEP=0  # 当前步骤
+
+echo -e "${BLUE}Author : giantbranch ${NC}"
 echo ""
-echo "Github : https://github.com/giantbranch/pwn-env-init"
+echo -e "${BLUE}Github : https://github.com/giantbranch/pwn-env-init${NC}"
 echo ""
 
+# 检查Python环境
+check_python_env
+update_progress "Python环境检测完成"
+
+# 检查权限
+check_permissions
+update_progress "权限检查完成"
+
+# 检查系统架构
+check_architecture
+update_progress "系统架构检查完成"
+
+# 检查必要工具
+check_required_tools
+update_progress "必要工具检查完成"
+
 # 检查必要依赖
-echo "检查系统依赖..."
+echo -e "${YELLOW}检查系统依赖...${NC}"
 check_dependency "apt-get"
 check_dependency "git"
 check_dependency "gdb"
-
-# 询问用户选择Python版本
-echo "请选择Python版本 (2/3):"
-read python_version
-
-if [[ $python_version != "2" && $python_version != "3" ]]; then
-    error_exit "无效的选择，请输入2或3"
-fi
+update_progress "系统依赖检查完成"
 
 # 创建临时目录
 TEMP_DIR=$(mktemp -d)
 TEMP_DIRS+=("$TEMP_DIR")
 cd "$TEMP_DIR"
 
-# change sourse to ustc
-echo "I suggest you modify the /etc/apt/sources.list file to speed up the download."
-# echo "Press Enter to continue~"
-# read -t 5 test
-#sudo  sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list
-# change sourse —— deb-src 
-sudo sed -i 's/# deb-src/deb-src/' "/etc/apt/sources.list"
-check_command "修改sources.list失败"
+# 配置清华源
+echo -e "${YELLOW}正在配置清华源...${NC}"
 
-# change pip source
+# 备份原有源
+echo -e "${YELLOW}正在备份原有源文件到 /etc/apt/sources.list.bak${NC}"
+echo -e "${YELLOW}如果需要恢复原有源，请执行: sudo cp /etc/apt/sources.list.bak /etc/apt/sources.list${NC}"
+sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+check_command "备份原有源失败"
+
+# 配置apt清华源
+sudo tee /etc/apt/sources.list << EOF
+# 默认注释了源码镜像以提高 apt update 速度，如有需要可自行取消注释
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted universe multiverse
+EOF
+check_command "配置apt清华源失败"
+
+# 配置pip清华源
 if [ ! -d ~/.pip ]; then
   mkdir ~/.pip
 fi
-echo -e "[global]\nindex-url = https://pypi.douban.com/simple/\n[install]\ntrusted-host = pypi.douban.com" >  ~/.pip/pip.conf
-check_command "配置pip源失败"
+echo -e "[global]\nindex-url = https://pypi.tuna.tsinghua.edu.cn/simple/\n[install]\ntrusted-host = pypi.tuna.tsinghua.edu.cn" >  ~/.pip/pip.conf
+check_command "配置pip清华源失败"
+
+update_progress "配置清华源完成"
 
 # support 32 bit
 dpkg --add-architecture i386
@@ -115,37 +348,40 @@ check_command "添加32位架构支持失败"
 sudo apt-get update
 check_command "更新软件源失败"
 
-# sudo apt-get -y install lib32z1
 sudo apt-get -y install libc6-i386
 check_command "安装libc6-i386失败"
 
-# maybe git？
 sudo apt-get -y install git gdb
 check_command "安装git和gdb失败"
+update_progress "安装系统依赖完成"
 
 # install pwndbg
-echo "正在安装pwndbg..."
+echo -e "${YELLOW}正在安装pwndbg...${NC}"
 git clone https://github.com/pwndbg/pwndbg
 check_command "克隆pwndbg失败"
 cd pwndbg
 ./setup.sh
 check_command "安装pwndbg失败"
+cd ..
+update_progress "安装pwndbg完成"
 
 # install peda
-echo "正在安装peda..."
+echo -e "${YELLOW}正在安装peda...${NC}"
 git clone https://github.com/longld/peda.git ~/peda
 check_command "克隆peda失败"
 echo "source ~/peda/peda.py" >> ~/.gdbinit
 check_command "配置peda失败"
+update_progress "安装peda完成"
 
-# download the libc source to current directory(you can use gdb with this example command: directory ~/glibc-2.24/malloc/)
-echo "正在下载libc源码..."
+# download the libc source
+echo -e "${YELLOW}正在下载libc源码...${NC}"
 sudo apt-get source libc6-dev
 check_command "下载libc源码失败"
+update_progress "下载libc源码完成"
 
 # 根据用户选择安装不同版本的Python环境
 if [ "$python_version" = "2" ]; then
-    echo "正在安装Python2环境..."
+    echo -e "${YELLOW}正在安装Python2环境...${NC}"
     sudo apt-get -y install python python-pip
     check_command "安装Python2失败"
     pip install more-itertools==5.0.0
@@ -153,36 +389,45 @@ if [ "$python_version" = "2" ]; then
     pip install pwntools
     check_command "安装pwntools失败"
 else
-    echo "正在安装Python3环境..."
+    echo -e "${YELLOW}正在安装Python3环境...${NC}"
     sudo apt-get -y install python3 python3-pip
     check_command "安装Python3失败"
     pip3 install pwntools
     check_command "安装pwntools失败"
 fi
+update_progress "安装Python环境完成"
 
 # install one_gadget
-echo "正在安装one_gadget..."
+echo -e "${YELLOW}正在安装one_gadget...${NC}"
 sudo apt-get -y install ruby
 check_command "安装ruby失败"
 sudo gem install one_gadget
 check_command "安装one_gadget失败"
+update_progress "安装one_gadget完成"
 
-# download 
-echo "正在安装libc-database..."
+# download libc-database
+echo -e "${YELLOW}正在安装libc-database...${NC}"
 git clone https://github.com/niklasb/libc-database.git ~/libc-database
 check_command "克隆libc-database失败"
+update_progress "安装libc-database完成"
 
-echo "Do you want to download libc-database now(Y/n)?"
+echo -e "${YELLOW}Do you want to download libc-database now(Y/n)?${NC}"
 read input
 if [[ $input = "n" ]] || [[ $input = "N" ]]; then
-	echo "you can cd ~/libc-database and run ./get to download the libc at anytime you want"
+    echo -e "${YELLOW}you can cd ~/libc-database and run ./get to download the libc at anytime you want${NC}"
 else
-	cd ~/libc-database && ./get
+    cd ~/libc-database && ./get
     check_command "下载libc-database失败"
+    update_progress "下载libc-database完成"
 fi
-echo "========================================="
-echo "=============Good, Enjoy it.============="
-echo "========================================="
+
+# 设置目录权限
+set_directory_permissions
+update_progress "设置目录权限完成"
 
 # 安装成功，清除安装失败标志
 INSTALL_FAILED=false
+
+echo -e "${GREEN}=========================================${NC}"
+echo -e "${GREEN}=============Good, Enjoy it.=============${NC}"
+echo -e "${GREEN}=========================================${NC}"
