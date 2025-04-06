@@ -13,6 +13,76 @@ NC='\033[0m' # No Color
 START_TIME=$(date +%s)
 STEP_TIMES=()
 
+# 检测shell环境函数
+check_shell_env() {
+    echo -e "${YELLOW}正在检测shell环境...${NC}"
+    
+    # 获取当前shell
+    local current_shell=$(basename "$SHELL")
+    echo -e "${GREEN}当前使用的shell: $current_shell${NC}"
+    
+    # 检查是否安装了其他常用shell
+    local shells=("bash" "zsh" "fish")
+    local installed_shells=()
+    
+    for shell in "${shells[@]}"; do
+        if command -v $shell &> /dev/null; then
+            local version=$($shell --version 2>&1 | head -n 1)
+            installed_shells+=("$shell")
+            echo -e "${GREEN}已安装: $shell${NC} - $version"
+        else
+            echo -e "${YELLOW}未安装: $shell${NC}"
+        fi
+    done
+    
+    # 检查shell配置文件
+    case $current_shell in
+        "bash")
+            if [ -f ~/.bashrc ]; then
+                echo -e "${GREEN}检测到bash配置文件: ~/.bashrc${NC}"
+            else
+                echo -e "${YELLOW}未检测到bash配置文件: ~/.bashrc${NC}"
+            fi
+            ;;
+        "zsh")
+            if [ -f ~/.zshrc ]; then
+                echo -e "${GREEN}检测到zsh配置文件: ~/.zshrc${NC}"
+            else
+                echo -e "${YELLOW}未检测到zsh配置文件: ~/.zshrc${NC}"
+            fi
+            ;;
+        "fish")
+            if [ -d ~/.config/fish ]; then
+                echo -e "${GREEN}检测到fish配置目录: ~/.config/fish${NC}"
+            else
+                echo -e "${YELLOW}未检测到fish配置目录: ~/.config/fish${NC}"
+            fi
+            ;;
+        *)
+            echo -e "${YELLOW}警告: 检测到不常见的shell: $current_shell${NC}"
+            ;;
+    esac
+    
+    # 询问用户是否要安装其他shell
+    if [ ${#installed_shells[@]} -lt ${#shells[@]} ]; then
+        echo -e "${YELLOW}是否要安装其他shell环境？(y/N)${NC}"
+        read install_other_shells
+        if [[ $install_other_shells == "y" || $install_other_shells == "Y" ]]; then
+            for shell in "${shells[@]}"; do
+                if ! command -v $shell &> /dev/null; then
+                    echo -e "${YELLOW}是否安装 $shell？(y/N)${NC}"
+                    read install_shell
+                    if [[ $install_shell == "y" || $install_shell == "Y" ]]; then
+                        sudo apt-get install -y $shell
+                        check_command "安装$shell失败"
+                        echo -e "${GREEN}已安装: $shell${NC}"
+                    fi
+                fi
+            done
+        fi
+    fi
+}
+
 # 检测Python环境函数
 check_python_env() {
     echo -e "${YELLOW}正在检测本地Python环境...${NC}"
@@ -273,13 +343,17 @@ trap cleanup EXIT
 INSTALL_FAILED=false
 
 # 进度跟踪
-TOTAL_STEPS=15  # 总步骤数增加
+TOTAL_STEPS=16  # 总步骤数增加
 CURRENT_STEP=0  # 当前步骤
 
 echo -e "${BLUE}Author : giantbranch ${NC}"
 echo ""
 echo -e "${BLUE}Github : https://github.com/giantbranch/pwn-env-init${NC}"
 echo ""
+
+# 检查shell环境
+check_shell_env
+update_progress "Shell环境检测完成"
 
 # 检查Python环境
 check_python_env
